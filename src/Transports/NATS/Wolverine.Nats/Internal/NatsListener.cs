@@ -211,11 +211,11 @@ public class NatsListener : IListener, ISupportDeadLetterQueue, IReportConnectio
         }
         else
         {
-            var mapper = new NatsEnvelopeMapper(endpoint, tenantMapper);
-            if (endpoint.MessageType != null)
-            {
-                mapper.ReceivesMessage(endpoint.MessageType);
-            }
+            // Ascendium interop fork: use the endpoint's (possibly UseInterop-customized) Core
+            // NATS mapper rather than building a fresh default. NatsEndpoint.buildMapper folds in
+            // the tenant subject mapper, and Endpoint<,>.BuildMapper applies ReceivesMessage +
+            // any UseInterop customization. Upstream built `new NatsEnvelopeMapper(endpoint, tenantMapper)`.
+            var mapper = endpoint.EnvelopeMapper ??= endpoint.BuildMapper(runtime);
             subscriber = new CoreNatsSubscriber(endpoint, connection, logger, mapper, subscriptionPattern);
         }
 

@@ -10,7 +10,9 @@ public class NatsSender : ISender
 {
     private readonly NatsEndpoint _endpoint;
     private readonly ILogger<NatsEndpoint> _logger;
-    private readonly NatsEnvelopeMapper _mapper;
+    // Ascendium interop fork: typed to the INatsEnvelopeMapper interface (was the concrete
+    // NatsEnvelopeMapper) so a UseInterop-supplied custom mapper flows through to sending.
+    private readonly INatsEnvelopeMapper _mapper;
     private readonly CancellationToken _cancellation;
     private readonly INatsPublisher _publisher;
     private readonly bool _supportsNativeScheduledSend;
@@ -21,7 +23,7 @@ public class NatsSender : ISender
         NatsEndpoint endpoint,
         INatsPublisher publisher,
         ILogger<NatsEndpoint> logger,
-        NatsEnvelopeMapper mapper,
+        INatsEnvelopeMapper mapper,
         CancellationToken cancellation,
         bool supportsNativeScheduledSend,
         ITenantSubjectMapper? tenantSubjectMapper = null,
@@ -44,7 +46,7 @@ public class NatsSender : ISender
         NatsConnection connection,
         INatsJSContext? jetStreamContext,
         ILogger<NatsEndpoint> logger,
-        NatsEnvelopeMapper mapper,
+        INatsEnvelopeMapper mapper,
         CancellationToken cancellation,
         bool useJetStream,
         bool supportsNativeScheduledSend,

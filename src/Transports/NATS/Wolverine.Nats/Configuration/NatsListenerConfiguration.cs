@@ -4,8 +4,11 @@ using Wolverine.Nats.Internal;
 
 namespace Wolverine.Nats.Configuration;
 
+// Ascendium interop fork: derive from InteroperableListenerConfiguration (was the plain
+// ListenerConfiguration) to inherit UseInterop / InteropWithCloudEvents, exactly as Kafka's
+// KafkaListenerConfiguration does.
 public class NatsListenerConfiguration
-    : ListenerConfiguration<NatsListenerConfiguration, NatsEndpoint>
+    : InteroperableListenerConfiguration<NatsListenerConfiguration, NatsEndpoint, INatsEnvelopeMapper, NatsEnvelopeMapper>
 {
     public NatsListenerConfiguration(NatsEndpoint endpoint)
         : base(endpoint) { }

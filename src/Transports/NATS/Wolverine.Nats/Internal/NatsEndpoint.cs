@@ -11,12 +11,16 @@ using Wolverine.Transports.Sending;
 
 namespace Wolverine.Nats.Internal;
 
-public class NatsEndpoint : Endpoint, IBrokerEndpoint
+// Ascendium interop fork: derive from the generic Endpoint<TMapper, TConcreteMapper>
+// base (as Kafka's KafkaTopic does) so the InteroperableListenerConfiguration /
+// InteroperableSubscriberConfiguration UseInterop / InteropWithCloudEvents surface
+// becomes available. Upstream V6.5.1 derived from the plain Endpoint.
+public class NatsEndpoint : Endpoint<INatsEnvelopeMapper, NatsEnvelopeMapper>, IBrokerEndpoint
 {
     private readonly NatsTransport _transport;
     private NatsConnection? _connection;
     private ILogger<NatsEndpoint>? _logger;
-    private NatsEnvelopeMapper? _mapper;
+    private INatsEnvelopeMapper? _mapper;
 
     public NatsEndpoint(string subject, NatsTransport transport, EndpointRole role)
         : base(new Uri($"{transport.Protocol}://subject/{subject}"), role)
@@ -154,16 +158,34 @@ public class NatsEndpoint : Endpoint, IBrokerEndpoint
         };
     }
 
+    /// <summary>
+    /// Ascendium interop fork: the generic <see cref="Endpoint{TMapper,TConcreteMapper}"/>
+    /// base calls this to build the default Core NATS envelope mapper. It folds in the
+    /// tenant subject mapper (when tenancy is active) so the mapper produced here matches
+    /// what the listener path used to build inline. <c>BuildMapper</c> then layers any
+    /// <c>UseInterop(...)</c> customization and <c>ReceivesMessage(MessageType)</c> on top.
+    /// </summary>
+    protected override NatsEnvelopeMapper buildMapper(IWolverineRuntime runtime)
+    {
+        ITenantSubjectMapper? tenantMapper = null;
+        if (_transport.Tenants.Any() && TenancyBehavior == TenancyBehavior.TenantAware)
+        {
+            tenantMapper = _transport.TenantSubjectMapper;
+        }
+
+        return new NatsEnvelopeMapper(this, tenantMapper);
+    }
+
     protected override ISender CreateSender(IWolverineRuntime runtime)
     {
         _connection = _transport.Connection;
         _logger = runtime.LoggerFactory.CreateLogger<NatsEndpoint>();
-        _mapper = new NatsEnvelopeMapper(this);
 
-        if (MessageType != null)
-        {
-            _mapper.ReceivesMessage(MessageType);
-        }
+        // Resolve the (possibly UseInterop-customized) Core NATS mapper once and share it
+        // with the listener path via EnvelopeMapper. Upstream built `new NatsEnvelopeMapper(this)`
+        // here unconditionally.
+        EnvelopeMapper ??= BuildMapper(runtime);
+        _mapper = EnvelopeMapper;
 
         var useJetStream = UseJetStream && _transport.Configuration.EnableJetStream;
         var supportsScheduledSend = useJetStream && 

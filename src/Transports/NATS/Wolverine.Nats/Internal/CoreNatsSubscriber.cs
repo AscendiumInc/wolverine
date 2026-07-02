@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using NATS.Client.Core;
+using Wolverine.Runtime.Serialization;
 using Wolverine.Transports;
 
 namespace Wolverine.Nats.Internal;
@@ -9,7 +10,8 @@ internal class CoreNatsSubscriber : INatsSubscriber
     private readonly NatsEndpoint _endpoint;
     private readonly NatsConnection _connection;
     private readonly ILogger<NatsEndpoint> _logger;
-    private readonly NatsEnvelopeMapper _mapper;
+    // Ascendium interop fork: typed to INatsEnvelopeMapper (was concrete NatsEnvelopeMapper).
+    private readonly INatsEnvelopeMapper _mapper;
     private readonly string _subscriptionPattern;
     private readonly List<IAsyncDisposable> _subscriptions = new();
     private readonly List<Task> _consumerTasks = new();
@@ -18,7 +20,7 @@ internal class CoreNatsSubscriber : INatsSubscriber
         NatsEndpoint endpoint,
         NatsConnection connection,
         ILogger<NatsEndpoint> logger,
-        NatsEnvelopeMapper mapper,
+        INatsEnvelopeMapper mapper,
         string? subscriptionPattern = null
     )
     {
@@ -108,7 +110,17 @@ internal class CoreNatsSubscriber : INatsSubscriber
                                 // Skip messages without headers or without message-type header.
                                 // These are typically NATS protocol messages (JetStream acks, etc.)
                                 // that should not be processed by Wolverine.
-                                if (_endpoint.MessageType == null && (msg.Headers == null || !msg.Headers.ContainsKey("message-type")))
+                                //
+                                // Ascendium interop fork: do NOT skip when the endpoint's serializer
+                                // can recover the message type from the body itself (an
+                                // IUnwrapsMetadataMessageSerializer such as the CloudEvents mapper wired
+                                // by InteropWithCloudEvents). External CloudEvents producers carry the
+                                // type inside the document, not in a Wolverine "message-type" header, so
+                                // header-less messages are legitimate here and must flow through to the
+                                // unwrapping serializer. Upstream V6.5.1 dropped them unconditionally.
+                                var canUnwrapTypeFromBody = _endpoint.DefaultSerializer is IUnwrapsMetadataMessageSerializer;
+                                if (_endpoint.MessageType == null && !canUnwrapTypeFromBody &&
+                                    (msg.Headers == null || !msg.Headers.ContainsKey("message-type")))
                                 {
                                     _logger.LogDebug(
                                         "Skipping NATS message without message-type header from subject {Subject}. DataLength={DataLength}, HasHeaders={HasHeaders}",

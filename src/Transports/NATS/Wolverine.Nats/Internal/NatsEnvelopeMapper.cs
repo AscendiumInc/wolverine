@@ -5,7 +5,7 @@ using Wolverine.Transports;
 
 namespace Wolverine.Nats.Internal;
 
-public class NatsEnvelopeMapper : EnvelopeMapper<NatsMsg<byte[]>, NatsHeaders>
+public class NatsEnvelopeMapper : EnvelopeMapper<NatsMsg<byte[]>, NatsHeaders>, INatsEnvelopeMapper
 {
     private readonly ITenantSubjectMapper? _tenantMapper;
     

@@ -6,8 +6,11 @@ namespace Wolverine.Nats.Configuration;
 /// <summary>
 /// Configuration for NATS publishers/subscribers
 /// </summary>
+// Ascendium interop fork: derive from InteroperableSubscriberConfiguration (was the plain
+// SubscriberConfiguration) to inherit UseInterop / InteropWithCloudEvents, exactly as Kafka's
+// KafkaSubscriberConfiguration does.
 public class NatsSubscriberConfiguration
-    : SubscriberConfiguration<NatsSubscriberConfiguration, NatsEndpoint>
+    : InteroperableSubscriberConfiguration<NatsSubscriberConfiguration, NatsEndpoint, INatsEnvelopeMapper, NatsEnvelopeMapper>
 {
     public NatsSubscriberConfiguration(NatsEndpoint endpoint)
         : base(endpoint) { }
