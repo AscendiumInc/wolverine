@@ -1,8 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <Description>NATS Transport for Wolverine Messaging Systems</Description>
-        <PackageId>WolverineFx.Nats</PackageId>
+        <!-- Ascendium private fork: distinct PackageId, drop-in namespace (Wolverine.Nats),
+             adds the UseInterop() / InteropWithCloudEvents() interop surface (parity with
+             Kafka/RabbitMQ). Carried as one commit on ascendium/nats-interop, rebased onto
+             each upstream release tag. The ProjectReference to Wolverine.csproj packs as a
+             dependency on the published WolverineFx package at Directory.Build.props $(Version). -->
+        <Description>NATS Transport for Wolverine Messaging Systems. Ascendium private fork of JasperFx/wolverine's Wolverine.Nats (MIT), adding the UseInterop / InteropWithCloudEvents interoperability surface. Namespace stays Wolverine.Nats (drop-in).</Description>
+        <PackageId>Ascendium.WolverineFx.Nats</PackageId>
+        <RepositoryUrl>https://github.com/AscendiumInc/wolverine</RepositoryUrl>
         <GenerateAssemblyProductAttribute>false</GenerateAssemblyProductAttribute>
         <GenerateAssemblyCopyrightAttribute>false</GenerateAssemblyCopyrightAttribute>
         <GenerateAssemblyVersionAttribute>false</GenerateAssemblyVersionAttribute>
