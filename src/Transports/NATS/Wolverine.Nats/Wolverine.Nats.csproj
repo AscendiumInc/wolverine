@@ -8,6 +8,14 @@
              dependency on the published WolverineFx package at Directory.Build.props $(Version). -->
         <Description>NATS Transport for Wolverine Messaging Systems. Ascendium private fork of JasperFx/wolverine's Wolverine.Nats (MIT), adding the UseInterop / InteropWithCloudEvents interoperability surface. Namespace stays Wolverine.Nats (drop-in).</Description>
         <PackageId>Ascendium.WolverineFx.Nats</PackageId>
+        <!-- Fork-only patch release on an UNCHANGED upstream version: pack with -p:AscendiumPatch=N to
+             publish $(Version).N (e.g. 6.24.0.1). It must be a separate property rather than
+             -p:Version=6.24.0.1, because Version is global to the build and would also re-version the
+             ProjectReference to Wolverine.csproj — producing a dependency on a WolverineFx 6.24.0.1
+             that upstream never published, so every restore would fail. Scoped here, only this
+             package's version moves; the WolverineFx dependency stays pinned to the real upstream
+             release. Leave unset to publish straight upstream parity. -->
+        <PackageVersion Condition="'$(AscendiumPatch)' != ''">$(Version).$(AscendiumPatch)</PackageVersion>
         <RepositoryUrl>https://github.com/AscendiumInc/wolverine</RepositoryUrl>
         <GenerateAssemblyProductAttribute>false</GenerateAssemblyProductAttribute>
         <GenerateAssemblyCopyrightAttribute>false</GenerateAssemblyCopyrightAttribute>
