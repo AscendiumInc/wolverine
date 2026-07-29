@@ -111,13 +111,65 @@ git push origin ascendium/nats-interop --force-with-lease
 > Pushing needs the `home-github` SSH host-alias (`git@home-github:AscendiumInc/wolverine.git`);
 > the default `github.com` key is read-only, and the 1Password SSH agent may need a desktop approval.
 
-### 6. Roll the consumers (bottom-up)
+### 6. Realign the whole Critter Stack, not just the Wolverine line
+
+> **A Wolverine bump is a Critter Stack bump.** Wolverine ships in lockstep with JasperFx, Marten,
+> Weasel and Polecat, and its assemblies are compiled against *exact* builds of them. A consumer that
+> centrally pins any of those (CPM) keeps its old pin, and you get a **binary skew**: the build stays
+> **green**, and the failure only appears at runtime as `TypeLoadException: Method '…' does not have
+> an implementation` or `FileNotFoundException: Weasel.Storage, Version=…`. Do **not** treat a
+> successful `dotnet build` as evidence that the versions are aligned — it isn't.
+
+**Why it bites so hard:** those runtime exceptions are usually thrown *inside a message handler*.
+Wolverine catches handler exceptions, logs them and moves the envelope to the error queue, so an
+integration test that publishes and waits sees **only a timeout with no cause**. That is exactly how
+the 6.16 → 6.24 bump hid a stale `Marten 9.11.0` pin: `WolverineFx.Marten 6.24.0` wants **9.20.0**,
+the build was green, and the sole symptom was the Marten golden-path test hanging for 60 s. (The
+prime-radiant golden-path tests now publish through a Wolverine **tracked session**, which rethrows
+the handler's own exception instead of masking it as a timeout — keep it that way.)
+
+**The floor check.** The fork's own `Directory.Packages.props` at the new tag is the source of truth
+for what this Wolverine was actually built against. Diff it against each consumer's pins:
+
+```bash
+# what the new Wolverine build itself uses
+grep -E 'Include="(JasperFx|Marten|Weasel|Polecat|Npgsql|NATS\.Net)' \
+  /Users/jfmontpetit/Code/wolverine/Directory.Packages.props
+
+# what a consumer currently pins
+grep -E 'Include="(JasperFx|Marten|Weasel|Polecat|Npgsql|NATS\.Net)' \
+  /Users/jfmontpetit/Code/prime-radiant/Directory.Packages.props
+```
+
+Cross-check against the declared floors in the packages the consumer actually references — this is
+what catches a pin that is merely *stale* rather than outright invalid:
+
+```bash
+unzip -p ~/.nuget/packages/wolverinefx.marten/<ver>/wolverinefx.marten.<ver>.nupkg '*.nuspec' \
+  | grep 'dependency id'
+```
+
+Bring every overlapping pin **up to** what the fork/nuspec says — default to matching it exactly, and
+only stay higher where the consumer deliberately rides a newer line (prime-radiant pins `Npgsql` on
+the .NET 10 line, above the fork's 9.x; higher is fine, *lower is the trap*). Never mechanically
+downgrade a consumer to match the fork.
+
+Then re-run the consumer's full integration suite — not just the build. NuGet raises `NU1109` only
+when a pin sits *below a declared floor*; a pin that satisfies the floor but is binary-incompatible
+passes restore silently, so the integration tests are the only gate that catches it.
+
+Then, bottom-up:
 
 1. **`wolverinefx-asyncapi`** — bump its `Directory.Packages.props` Wolverine line +
-   `Ascendium.WolverineFx.Nats` to the new version, build/test, publish the `0.1.x` packages.
+   `Ascendium.WolverineFx.Nats` to the new version, apply the floor check above, build/test, publish
+   the `0.1.x` packages.
 2. **`prime-radiant`** — bump `Directory.Packages.props` (the whole WolverineFx family +
-   `Ascendium.WolverineFx.Nats` + `WolverineFx.AsyncApi*`), resolve transitive floors, fix any
-   `src/` breakage, full `dotnet test` green, then the docs/samples/security lockstep + release.
+   `Ascendium.WolverineFx.Nats` + `WolverineFx.AsyncApi*`), apply the floor check above, fix any
+   `src/` breakage, full `dotnet test` green **against real infra** (skipped integration tests prove
+   nothing — see the runbook in `prime-radiant/spikes/Nats.JetStream.Spike/README.md`), then the
+   docs/samples/security lockstep + release.
+
+Known moving parts, 6.16.0 → 6.24.0: `Marten` 9.11.0 → **9.20.0**, `NATS.Net` 2.7.0 → **2.8.2**.
 
 ## Exit ramp
 
