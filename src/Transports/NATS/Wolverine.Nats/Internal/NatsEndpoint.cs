@@ -271,7 +271,14 @@ public class NatsEndpoint : Endpoint<INatsEnvelopeMapper, NatsEnvelopeMapper>, I
         if (!string.IsNullOrEmpty(DeadLetterSubject))
         {
             var dlqEndpoint = _transport.EndpointForSubject(DeadLetterSubject);
-            deadLetterSender = (ISender)runtime.Endpoints.GetOrBuildSendingAgent(dlqEndpoint.Uri);
+
+            // Ascendium fix: GetOrBuildSendingAgent returns an ISendingAgent (BufferedSendingAgent /
+            // DurableSendingAgent / InlineSendingAgent). NONE of them implement ISender — only the
+            // test-double StubEndpoint does — so this cast threw InvalidCastException 100% of the
+            // time, making any listener with a dead-letter subject fail at startup. Build the NATS
+            // sender for the DLQ endpoint directly instead, which is what the listener actually
+            // wants: a raw ISender it can push a failed envelope into.
+            deadLetterSender = dlqEndpoint.CreateSender(runtime);
         }
 
         var useJetStream = UseJetStream && _transport.Configuration.EnableJetStream;

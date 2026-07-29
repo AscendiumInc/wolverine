@@ -89,6 +89,28 @@ internal class JetStreamSubscriber : INatsSubscriber
             {
                 config.FilterSubjects = [_subscriptionPattern, scheduleSubject];
             }
+            else if (string.IsNullOrEmpty(_endpoint.ConsumerName))
+            {
+                // Ascendium fix: for an *unnamed* (ephemeral) consumer, use the MULTI-filter
+                // property even though there is only one subject.
+                //
+                // Setting the singular FilterSubject with no consumer name makes NATS.Net build
+                // the JetStream API subject as
+                //     $JS.API.CONSUMER.CREATE.<stream>.<name>.<filter>
+                // with an empty <name>, which collapses to e.g.
+                //     $JS.API.CONSUMER.CREATE.SPIKE_STREAM.spike.work
+                // The server then parses "spike" as the consumer name and "work" as the filter,
+                // compares that against the body's filter_subject ("spike.work"), and rejects
+                // the request with err 10131 "Consumer create request did not match filtered
+                // subject from create subject". That makes EVERY ephemeral JetStream listener
+                // fail at startup for any subject containing a dot.
+                //
+                // FilterSubjects (plural) cannot be encoded in the API subject, so NATS.Net
+                // emits the plain "$JS.API.CONSUMER.CREATE.<stream>" form and the server reads
+                // the filter from the body. Named consumers are unaffected (the API subject is
+                // well-formed once <name> is present), so they keep the singular property.
+                config.FilterSubjects = [_subscriptionPattern];
+            }
             else
             {
                 config.FilterSubject = _subscriptionPattern;
