@@ -18,12 +18,30 @@ directly (no separate ComplianceTests package needed).
 
 - **Branch:** `ascendium/nats-interop` — the published branch. Base of each release = the upstream
   release **tag** it was rebased onto.
-- **The patch is 2 commits:**
+- **The patch is 5 commits** (`git log --oneline V<tag>..HEAD`), in rebase order:
   1. `feat(nats): UseInterop + InteropWithCloudEvents interop augmentation` — ~70 lines across 7
      files + 1 new `INatsEnvelopeMapper.cs` + 2 interop test files. **Keep this commit pure** (only
      the interop code) so rebases stay clean.
   2. `chore(fork): Ascendium packaging + single-source nuget.config` — `PackageId` override on
      `Wolverine.Nats.csproj` + a root `nuget.config` pinning a single public source.
+  3. `fix(nats): unbreak JetStream — DLQ ISender cast + ephemeral consumer filter` — `NatsEndpoint`
+     built its dead-letter sender by casting an `ISendingAgent` to `ISender` (no production
+     implementation satisfies it, so *every* listener with a dead-letter subject threw at startup),
+     and `JetStreamSubscriber` set the singular `FilterSubject` on an ephemeral consumer, producing a
+     malformed JetStream API subject (server err 10131).
+  4. `fix(nats): stop silently dropping dead letters, and declare DeadLetterStorage` —
+     `MoveToErrorsAsync` gated on JetStream's `NumDelivered`, which an in-process retry policy never
+     advances, so it returned having published nothing and the caller then acked the message away.
+     Also adds the `DeadLetterStorage` override NATS was the only native-DLQ endpoint to lack.
+  5. `chore(fork): AscendiumPatch property for fork-only patch releases` — see
+     [Versioning](#versioning).
+- **Docs commits** (`docs(fork): …`) update this file and rebase along with the rest.
+- **All of it stays inside `src/Transports/NATS/Wolverine.Nats*`.** Fixes that belong in Wolverine
+  **core** are proposed upstream and carried nowhere — patching core would break the
+  `git rebase --onto` property this whole runbook depends on. (Outstanding: making
+  `ISupportDeadLetterQueue.MoveToErrorsAsync` report whether it handled the envelope, so a native
+  no-op falls through to durable storage instead of dropping the message — it lives in
+  `MessageContext` and would fix this failure class for every transport, not just NATS.)
 - **What the augmentation does** (mirrors Kafka's `IKafkaEnvelopeMapper` pattern):
   `NatsEndpoint : Endpoint<INatsEnvelopeMapper, NatsEnvelopeMapper>`; new `INatsEnvelopeMapper`;
   `NatsEnvelopeMapper` implements it; listener/sender use `endpoint.EnvelopeMapper`;
@@ -37,9 +55,34 @@ directly (no separate ComplianceTests package needed).
 Upstream sets `<Version>` directly in `Directory.Build.props` (no Nerdbank). So the package version
 **equals that value** — building the branch off tag `V6.16.0` yields `Ascendium.WolverineFx.Nats
 6.16.0`, and the `ProjectReference` to `Wolverine.csproj` packs as a `WolverineFx [6.16.0]`
-dependency automatically. **Match our package version to the upstream tag.** If we ever need a
-fork-only patch on the same upstream version, append a suffix (e.g. `6.16.0.1`) via a pack-time
-`-p:Version=`.
+dependency automatically. **Match our package version to the upstream tag.**
+
+### Fork-only patch releases — use `-p:AscendiumPatch=N`, never `-p:Version=`
+
+When we need to ship a fix against an **unchanged** upstream version, bump only *our* package:
+
+```bash
+dotnet pack … -p:AscendiumPatch=1     # publishes 6.24.0.1, depending on WolverineFx 6.24.0
+```
+
+`Wolverine.Nats.csproj` carries a conditional `<PackageVersion>$(Version).$(AscendiumPatch)</PackageVersion>`
+that only applies when the property is set.
+
+> **Do not use `-p:Version=6.24.0.1`.** This is what the runbook said until 2026-07-29, and it is
+> broken. `Version` is a **global** MSBuild property, so it re-versions *every* project in the build —
+> including `Wolverine.csproj`. The `ProjectReference` then packs as a dependency on
+> `WolverineFx 6.24.0.1`, **a version upstream never published**, so every consumer restore fails with
+> NU1102. The bug is invisible in the pack output and only shows up in the `.nuspec` (or at the
+> consumer). `AscendiumPatch` is scoped to the one project, so the dependency keeps pointing at the
+> real upstream release.
+>
+> **Always read the `.nuspec` before pushing** — it is the only place this class of mistake surfaces,
+> and a pushed version cannot be replaced:
+>
+> ```bash
+> unzip -p artifacts/Ascendium.WolverineFx.Nats.<version>.nupkg '*.nuspec' \
+>   | grep -E '<id>|<version>|dependency id="WolverineFx"'
+> ```
 
 ---
 
@@ -79,9 +122,28 @@ TESTCONTAINERS_RYUK_DISABLED=true \
 dotnet test src/Transports/NATS/Wolverine.Nats.Tests/Wolverine.Nats.Tests.csproj -f net10.0
 ```
 
-Must be green (the 6.16.0 baseline was **134/134**, including the CloudEvents round-trip tests
-`end_to_end_with_CloudEvents` and the 7 `InteropConfigurationSurfaceTests`). The compliance
-fixtures are the regression guard that our patch didn't break the transport.
+Must be green. Baselines: **134/134** at 6.16.0, **166** at 6.24.0.1 — including the CloudEvents
+round-trip tests `end_to_end_with_CloudEvents`, the 7 `InteropConfigurationSurfaceTests`, and the 7
+`NatsDeadLetter*` tests. The compliance fixtures are the regression guard that our patch didn't break
+the transport.
+
+Two environmental gotchas, both of which look like our patch failing and are not:
+
+- **`global_partitioned_sharded_processing` (2 tests) need a real Postgres** on `localhost:5433` —
+  they use `Servers.PostgresConnectionString`, not a testcontainer. Without it they fail with
+  `Failed to connect to [::1]:5433`. Stand it up on `intranet` and forward the port:
+
+  ```bash
+  SSH_ASKPASS_REQUIRE=never ssh ascendium@intranet 'docker run -d --name wolverine-test-pg \
+    -p 5433:5432 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+    postgres:17 -c max_connections=500'
+  SSH_ASKPASS_REQUIRE=never ssh -f -nNT -L 5433:localhost:5433 ascendium@intranet
+  ```
+
+- **One or two `TrackedSession` timeouts (30s) per full run** are load flakes over the SSH tunnel,
+  not regressions — it is a *different* test each run and each passes in isolation. Confirm with
+  `--filter "FullyQualifiedName~<TheTest>"` before believing a failure. A deterministic break fails
+  the same test every time.
 
 ### 3. Security-review the patch
 
@@ -91,13 +153,39 @@ outcome in **prime-radiant's** `Docs/security-reviews.md` ledger (that's the umb
 
 ### 4. Pack + publish
 
+A **normal release** (new upstream version) needs no version flag — `Directory.Build.props` already
+carries the rebased tag's `$(Version)`:
+
 ```bash
+rm -rf ./artifacts
 dotnet pack src/Transports/NATS/Wolverine.Nats/Wolverine.Nats.csproj -c Release \
   -p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg -o ./artifacts
-# verify: nuspec <id>=Ascendium.WolverineFx.Nats, <version>=6.17.0, dependency WolverineFx 6.17.0
+```
 
+A **fork-only patch** on an unchanged upstream version adds `-p:AscendiumPatch=N` — and *only* that.
+See [Versioning](#versioning) for why `-p:Version=` silently produces an unrestorable package:
+
+```bash
+dotnet pack src/Transports/NATS/Wolverine.Nats/Wolverine.Nats.csproj -c Release \
+  -p:AscendiumPatch=1 -p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg -o ./artifacts
+```
+
+**Verify the `.nuspec` before pushing.** A pushed version is immutable, and a wrong dependency
+version shows up nowhere else — not in the pack output, not at build time, only at consumer restore:
+
+```bash
+unzip -p artifacts/Ascendium.WolverineFx.Nats.<version>.nupkg '*.nuspec' \
+  | grep -E '<id>|<version>|dependency id="WolverineFx"'
+# expect: <id>Ascendium.WolverineFx.Nats</id>
+#         <version>6.24.0.1</version>                    <- ours (may carry the patch suffix)
+#         dependency id="WolverineFx" version="6.24.0"    <- MUST be a real upstream release
+```
+
+Then push:
+
+```bash
 API_KEY=$(awk -F'"' '$2 ~ /v3\/index\.json/{print $4; exit}' ~/.nuget/NuGet/NuGet.Config)
-dotnet nuget push ./artifacts/Ascendium.WolverineFx.Nats.6.17.0.nupkg \
+dotnet nuget push ./artifacts/Ascendium.WolverineFx.Nats.<version>.nupkg \
   --source https://nuget.ascendium.ca/v3/index.json --api-key "$API_KEY"
 dotnet nuget locals http-cache --clear   # so a fresh restore sees the new version
 ```
