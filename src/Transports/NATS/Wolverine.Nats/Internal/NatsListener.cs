@@ -84,25 +84,42 @@ public class NatsListener : IListener, ISupportDeadLetterQueue, IReportConnectio
 
     public bool NativeDeadLetterQueueEnabled => _subscriber.SupportsNativeDeadLetterQueue;
 
+    /// <remarks>
+    /// Wolverine calls this <em>only</em> once its error policy has already decided to dead-letter, and
+    /// <c>MessageContext.MoveToDeadLetterQueueAsync</c> <c>return</c>s immediately afterwards — it never
+    /// falls through to <c>Storage.Inbox.MoveToDeadLetterStorageAsync</c>. The continuation's very next act
+    /// is <c>CompleteAsync()</c>, which acks. <strong>So every path out of this method must retain the
+    /// message somewhere.</strong> A bare <c>return</c> here is not "decline to handle it" — it is silent
+    /// message loss.
+    /// </remarks>
     public async Task MoveToErrorsAsync(Envelope envelope, Exception exception)
     {
+        // Nothing to terminate on the broker (Core NATS, or a listener whose native DLQ is off and was
+        // selected anyway). Persist rather than return — see the remarks above.
         if (envelope is not NatsEnvelope natsEnvelope || !NativeDeadLetterQueueEnabled ||
             natsEnvelope.JetStreamMsg == null)
         {
+            await MoveToDurableStorageAsync(
+                envelope,
+                exception,
+                "the envelope carries no JetStream message to terminate");
             return;
         }
 
         var metadata = natsEnvelope.JetStreamMsg.Metadata;
-        if (metadata?.NumDelivered < (ulong)_endpoint.EffectiveMaxDeliveryAttempts)
-        {
-            return;
-        }
 
+        // NOTE: there is deliberately no `NumDelivered < EffectiveMaxDeliveryAttempts` guard here.
+        // The two counters measure different things: Envelope.Attempts counts IN-PROCESS attempts within
+        // a single delivery, while JetStream's NumDelivered counts BROKER deliveries and only advances on
+        // NAK or AckWait expiry. An in-process retry policy (Wolverine's default RetryWithCooldown) never
+        // advances NumDelivered, so gating on it made this method return without publishing or terminating
+        // on every such configuration — and the caller then acked the message away. Wolverine owns the
+        // decision to dead-letter; the broker's redelivery budget does not get a veto over it.
         var attempts = (int)(metadata?.NumDelivered ?? 1);
 
         // Retain the poison message by forwarding a copy to the dead-letter subject BEFORE terminating,
-        // so a terminate failure can't lose it. Terminating without a configured dead-letter subject drops
-        // the message, so warn loudly in that case.
+        // so a terminate failure can't lose it. With no dead-letter subject configured there is nowhere
+        // native to put it, so fall back to durable storage instead of dropping it.
         if (!string.IsNullOrEmpty(_endpoint.DeadLetterSubject))
         {
             envelope.Attempts = attempts;
@@ -115,11 +132,13 @@ public class NatsListener : IListener, ISupportDeadLetterQueue, IReportConnectio
         {
             _logger.LogWarning(
                 exception,
-                "Message {MessageId} exceeded {Attempts} delivery attempts on subject {Subject} but no dead-letter subject is configured; it will be terminated and dropped. Use DeadLetterTo(...) / ConfigureDeadLetterQueue(...) to retain poison messages.",
+                "Message {MessageId} dead-lettered after {Attempts} broker delivery attempts on subject {Subject}, but no dead-letter subject is configured; falling back to durable dead-letter storage. Use DeadLetterTo(...) / ConfigureDeadLetterQueue(...) to retain poison messages on a NATS subject.",
                 envelope.Id,
                 attempts,
                 _endpoint.Subject
             );
+
+            await MoveToDurableStorageAsync(envelope, exception, "no dead-letter subject is configured");
         }
 
         // Terminate delivery on the JetStream consumer with a reason so the server stops redelivering and
@@ -137,6 +156,41 @@ public class NatsListener : IListener, ISupportDeadLetterQueue, IReportConnectio
             _endpoint.Subject,
             _endpoint.DeadLetterSubject ?? "(none)"
         );
+    }
+
+    /// <summary>
+    /// Last-resort retention: hand the envelope to Wolverine's durable dead-letter storage when the
+    /// native NATS path cannot take it. <c>MessageContext</c> will not do this for us — once it has
+    /// routed to a native dead-letter queue it returns without consulting storage — so the listener
+    /// performs the fall-through itself rather than letting the caller's <c>CompleteAsync()</c> ack an
+    /// unretained message. No-ops harmlessly when the service has no message store
+    /// (<c>NullMessageStore</c>), which is why the reason is logged either way.
+    /// </summary>
+    private async Task MoveToDurableStorageAsync(Envelope envelope, Exception exception, string reason)
+    {
+        try
+        {
+            await _runtime.Storage.Inbox.MoveToDeadLetterStorageAsync(envelope, exception);
+
+            _logger.LogInformation(
+                "Message {MessageId} on subject {Subject} was dead-lettered to durable storage because {Reason}.",
+                envelope.Id,
+                _endpoint.Subject,
+                reason
+            );
+        }
+        catch (Exception storageFailure)
+        {
+            // Both destinations are now unavailable. Say so at Error with the original failure attached —
+            // this is the one case where the message really is lost, and it must never be silent.
+            _logger.LogError(
+                new AggregateException(exception, storageFailure),
+                "Message {MessageId} on subject {Subject} could not be dead-lettered natively ({Reason}) and durable dead-letter storage also failed. The message is lost.",
+                envelope.Id,
+                _endpoint.Subject,
+                reason
+            );
+        }
     }
 
     public async ValueTask CompleteAsync(Envelope envelope)

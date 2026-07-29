@@ -89,6 +89,24 @@ public class NatsEndpoint : Endpoint<INatsEnvelopeMapper, NatsEnvelopeMapper>, I
     public string? DeadLetterSubject { get; set; }
 
     /// <summary>
+    /// Where this endpoint's dead letters actually land. Native only when all three conditions that make
+    /// <see cref="NatsListener.MoveToErrorsAsync"/> publish to a subject hold: JetStream is on (Core NATS
+    /// has no message to terminate and reports no native dead-letter support), dead-letter queueing is
+    /// enabled, and a <see cref="DeadLetterSubject"/> exists to publish to. Without a subject the listener
+    /// falls back to durable storage, so <see cref="DeadLetterStorageMode.Durable"/> is the honest answer.
+    /// <para>
+    /// NATS has no native→durable recovery bridge (unlike RabbitMQ / Azure Service Bus / SQS), so
+    /// <see cref="DeadLetterStorageMode.NativeWithRecovery"/> is never reachable here — natively
+    /// dead-lettered messages are not queryable through <c>IDeadLetters</c>.
+    /// </para>
+    /// </summary>
+    public override DeadLetterStorageMode DeadLetterStorage =>
+        UseJetStream && _transport.Configuration.EnableJetStream
+        && DeadLetterQueueEnabled && !string.IsNullOrEmpty(DeadLetterSubject)
+            ? DeadLetterStorageMode.Native
+            : DeadLetterStorageMode.Durable;
+
+    /// <summary>
     /// Per-endpoint override for the maximum delivery attempts / dead-letter threshold. When null the
     /// transport-wide <see cref="JetStreamDefaults.MaxDeliver"/> applies (see <see cref="EffectiveMaxDeliveryAttempts"/>).
     /// </summary>
